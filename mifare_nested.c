@@ -1,5 +1,7 @@
 #include "mifare_nested_i.h"
 #include <gui/elements.h>
+#include <furi_hal_nfc.h>
+#include <lib/drivers/st25r3916.h>
 
 bool mifare_nested_custom_event_callback(void* context, uint32_t event) {
     furi_assert(context);
@@ -21,15 +23,14 @@ void mifare_nested_tick_event_callback(void* context) {
 
 void mifare_nested_show_loading_popup(void* context, bool show) {
     MifareNested* mifare_nested = context;
-    TaskHandle_t timer_task = xTaskGetHandle(configTIMER_SERVICE_TASK_NAME);
 
     if(show) {
         // Raise timer priority so that animations can play
-        vTaskPrioritySet(timer_task, configMAX_PRIORITIES - 1);
+        furi_timer_set_thread_priority(FuriTimerThreadPriorityElevated);
         view_dispatcher_switch_to_view(mifare_nested->view_dispatcher, MifareNestedViewLoading);
     } else {
         // Restore default timer priority
-        vTaskPrioritySet(timer_task, configTIMER_TASK_PRIORITY);
+        furi_timer_set_thread_priority(FuriTimerThreadPriorityNormal);
     }
 }
 
@@ -347,7 +348,6 @@ void mifare_nested_free(MifareNested* mifare_nested) {
     view_dispatcher_remove_view(mifare_nested->view_dispatcher, MifareNestedViewCheckKeys);
 
     // Nonces states
-    free(mifare_nested->nonces);
     free(mifare_nested->nested_state);
 
     // Keys
@@ -394,8 +394,182 @@ void mifare_nested_blink_stop(MifareNested* mifare_nested) {
     notification_message(mifare_nested->notifications, &mifare_nested_sequence_blink_stop);
 }
 
+void remove_new_nfc_and_init_old() {
+    // Deinitialize new NFC and init legacy
+    if(furi_hal_nfc_is_hal_ready() != FuriHalNfcErrorNone) {
+        FURI_LOG_E("nested", "NFC chip failed to start\r\n");
+        return;
+    }
+
+    furi_hal_nfc_acquire();
+    furi_hal_nfc_reset_mode();
+    furi_hal_nfc_low_power_mode_start();
+    furi_hal_nfc_release();
+    furry_hal_nfc_init();
+}
+
+void remove_old_nfc_and_init_new_back() {
+    // Deinitialize NFC
+    furry_hal_nfc_deinit();
+
+    //
+    furi_hal_nfc_acquire();
+    furi_hal_nfc_reset_mode();
+    furi_hal_nfc_low_power_mode_start();
+
+    FuriHalSpiBusHandle* handle = &furi_hal_spi_bus_handle_nfc;
+    // Set default state
+    st25r3916_direct_cmd(handle, ST25R3916_CMD_SET_DEFAULT);
+    // Increase IO driver strength of MISO and IRQ
+    st25r3916_write_reg(handle, ST25R3916_REG_IO_CONF2, ST25R3916_REG_IO_CONF2_io_drv_lvl);
+    // Check chip ID
+    uint8_t chip_id = 0;
+    st25r3916_read_reg(handle, ST25R3916_REG_IC_IDENTITY, &chip_id);
+    if((chip_id & ST25R3916_REG_IC_IDENTITY_ic_type_mask) !=
+       ST25R3916_REG_IC_IDENTITY_ic_type_st25r3916) {
+        furi_hal_nfc_low_power_mode_start();
+        furi_hal_nfc_release();
+        return;
+    }
+    // Clear interrupts
+    st25r3916_get_irq(handle);
+    // Mask all interrupts
+    st25r3916_mask_irq(handle, ST25R3916_IRQ_MASK_ALL);
+    // Enable interrupts
+    //furi_hal_nfc_init_gpio_isr();
+    // Disable internal overheat protection
+    st25r3916_change_test_reg_bits(handle, 0x04, 0x10, 0x10);
+
+    // Measure voltage
+    // Set measure power supply voltage source
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_REGULATOR_CONTROL,
+        ST25R3916_REG_REGULATOR_CONTROL_mpsv_mask,
+        ST25R3916_REG_REGULATOR_CONTROL_mpsv_vdd);
+    // Enable timer and interrupt register
+    st25r3916_mask_irq(handle, ~ST25R3916_IRQ_MASK_DCT);
+    st25r3916_direct_cmd(handle, ST25R3916_CMD_MEASURE_VDD);
+    //furi_hal_nfc_event_wait_for_specific_irq(handle, ST25R3916_IRQ_MASK_DCT, 100);
+    st25r3916_mask_irq(handle, ST25R3916_IRQ_MASK_ALL);
+    uint8_t ad_res = 0;
+    st25r3916_read_reg(handle, ST25R3916_REG_AD_RESULT, &ad_res);
+    uint16_t mV = ((uint16_t)ad_res) * 23U;
+    mV += (((((uint16_t)ad_res) * 4U) + 5U) / 10U);
+
+    if(mV < 3600) {
+        st25r3916_change_reg_bits(
+            handle,
+            ST25R3916_REG_IO_CONF2,
+            ST25R3916_REG_IO_CONF2_sup3V,
+            ST25R3916_REG_IO_CONF2_sup3V_3V);
+    } else {
+        st25r3916_change_reg_bits(
+            handle,
+            ST25R3916_REG_IO_CONF2,
+            ST25R3916_REG_IO_CONF2_sup3V,
+            ST25R3916_REG_IO_CONF2_sup3V_5V);
+    }
+
+    // Disable MCU CLK
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_IO_CONF1,
+        ST25R3916_REG_IO_CONF1_out_cl_mask | ST25R3916_REG_IO_CONF1_lf_clk_off,
+        0x07);
+    // Disable MISO pull-down
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_IO_CONF2,
+        ST25R3916_REG_IO_CONF2_miso_pd1 | ST25R3916_REG_IO_CONF2_miso_pd2,
+        0x00);
+    // Set tx driver resistance to 1 Om
+    st25r3916_change_reg_bits(
+        handle, ST25R3916_REG_TX_DRIVER, ST25R3916_REG_TX_DRIVER_d_res_mask, 0x00);
+    // Use minimum non-overlap
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_RES_AM_MOD,
+        ST25R3916_REG_RES_AM_MOD_fa3_f,
+        ST25R3916_REG_RES_AM_MOD_fa3_f);
+
+    // Set activation threashold
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_FIELD_THRESHOLD_ACTV,
+        ST25R3916_REG_FIELD_THRESHOLD_ACTV_trg_mask,
+        ST25R3916_REG_FIELD_THRESHOLD_ACTV_trg_105mV);
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_FIELD_THRESHOLD_ACTV,
+        ST25R3916_REG_FIELD_THRESHOLD_ACTV_rfe_mask,
+        ST25R3916_REG_FIELD_THRESHOLD_ACTV_rfe_105mV);
+    // Set deactivation threashold
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_FIELD_THRESHOLD_DEACTV,
+        ST25R3916_REG_FIELD_THRESHOLD_DEACTV_trg_mask,
+        ST25R3916_REG_FIELD_THRESHOLD_DEACTV_trg_75mV);
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_FIELD_THRESHOLD_DEACTV,
+        ST25R3916_REG_FIELD_THRESHOLD_DEACTV_rfe_mask,
+        ST25R3916_REG_FIELD_THRESHOLD_DEACTV_rfe_75mV);
+    // Enable external load modulation
+    st25r3916_change_reg_bits(
+        handle, ST25R3916_REG_AUX_MOD, ST25R3916_REG_AUX_MOD_lm_ext, ST25R3916_REG_AUX_MOD_lm_ext);
+    // Enable internal load modulation
+    st25r3916_change_reg_bits(
+        handle, ST25R3916_REG_AUX_MOD, ST25R3916_REG_AUX_MOD_lm_dri, ST25R3916_REG_AUX_MOD_lm_dri);
+    // Adjust FDT
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_PASSIVE_TARGET,
+        ST25R3916_REG_PASSIVE_TARGET_fdel_mask,
+        (5U << ST25R3916_REG_PASSIVE_TARGET_fdel_shift));
+    // Reduce RFO resistance in Modulated state
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_PT_MOD,
+        ST25R3916_REG_PT_MOD_ptm_res_mask | ST25R3916_REG_PT_MOD_pt_res_mask,
+        0x0f);
+    // Enable RX start on first 4 bits
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_EMD_SUP_CONF,
+        ST25R3916_REG_EMD_SUP_CONF_rx_start_emv,
+        ST25R3916_REG_EMD_SUP_CONF_rx_start_emv_on);
+    // Set antena tunning
+    st25r3916_change_reg_bits(handle, ST25R3916_REG_ANT_TUNE_A, 0xff, 0x82);
+    st25r3916_change_reg_bits(handle, ST25R3916_REG_ANT_TUNE_B, 0xff, 0x82);
+    st25r3916_change_reg_bits(
+        handle,
+        ST25R3916_REG_OP_CONTROL,
+        ST25R3916_REG_OP_CONTROL_en_fd_mask,
+        ST25R3916_REG_OP_CONTROL_en_fd_auto_efd);
+
+    // Perform calibration
+    if(st25r3916_check_reg(
+           handle, ST25R3916_REG_REGULATOR_CONTROL, ST25R3916_REG_REGULATOR_CONTROL_reg_s, 0x00)) {
+        //FURI_LOG_I(TAG, "Adjusting regulators");
+        // Reset logic
+        st25r3916_set_reg_bits(
+            handle, ST25R3916_REG_REGULATOR_CONTROL, ST25R3916_REG_REGULATOR_CONTROL_reg_s);
+        st25r3916_clear_reg_bits(
+            handle, ST25R3916_REG_REGULATOR_CONTROL, ST25R3916_REG_REGULATOR_CONTROL_reg_s);
+        st25r3916_direct_cmd(handle, ST25R3916_CMD_ADJUST_REGULATORS);
+        furi_delay_ms(6);
+    }
+
+    furi_hal_nfc_low_power_mode_start();
+
+    furi_hal_nfc_release();
+}
+
 int32_t mifare_nested_app(void* p) {
     UNUSED(p);
+    // Do required stuff
+    remove_new_nfc_and_init_old();
 
     MifareNested* mifare_nested = mifare_nested_alloc();
 
@@ -404,6 +578,9 @@ int32_t mifare_nested_app(void* p) {
     view_dispatcher_run(mifare_nested->view_dispatcher);
 
     mifare_nested_free(mifare_nested);
+
+    // Lets hope nothing goes wrong
+    remove_old_nfc_and_init_new_back();
 
     return 0;
 }

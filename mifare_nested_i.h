@@ -2,7 +2,6 @@
 #include "mifare_nested.h"
 #include "mifare_nested_worker.h"
 #include "lib/nested/nested.h"
-#include <furi.h>
 #include <gui/gui.h>
 #include <gui/view_dispatcher.h>
 #include <gui/scene_manager.h>
@@ -16,16 +15,17 @@
 #include "scenes/mifare_nested_scene.h"
 #include <storage/storage.h>
 #include <lib/toolbox/path.h>
-#include <lib/nfc/nfc_device.h>
 #include <lib/toolbox/value_index.h>
 #include <gui/modules/variable_item_list.h>
+#include "lib/nfclegacy/nfc_device.h"
 #include "mifare_nested_icons.h"
 
-#define NESTED_VERSION_APP "1.5.2"
+#define NESTED_VERSION_APP FAP_VERSION
 #define NESTED_GITHUB_LINK "https://github.com/AloneLiberty/FlipperNested"
 #define NESTED_RECOVER_KEYS_GITHUB_LINK "https://github.com/AloneLiberty/FlipperNestedRecovery"
 #define NESTED_NONCE_FORMAT_VERSION "3"
-#define NESTED_AUTHOR "@AloneLiberty (t.me/libertydev)"
+#define NESTED_AUTHOR \
+    "@AloneLiberty (t.me/libertydev)\nMade it work with latest firmware by @xMasterX"
 
 enum MifareNestedCustomEvent {
     // Reserve first 100 events for button types and indexes, starting from 0

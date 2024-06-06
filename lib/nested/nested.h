@@ -1,8 +1,8 @@
 #pragma once
 
-#include <lib/nfc/protocols/nfc_util.h>
-#include <lib/nfc/protocols/mifare_classic.h>
-#include <lib/nfc/protocols/crypto1.h>
+#include "../nfclegacy/protocols/nfc_util.h"
+#include "../nfclegacy/protocols/mifare_classic.h"
+#include "../nfclegacy/protocols/crypto1.h"
 
 #include <storage/storage.h>
 #include <stream/stream.h>
@@ -15,7 +15,7 @@ typedef enum {
     MifareNestedNonceHard,
 } MifareNestedNonceType;
 
-MifareNestedNonceType nested_check_nonce_type(FuriHalNfcTxRxContext* tx_rx, uint8_t blockNo);
+MifareNestedNonceType nested_check_nonce_type(FurryHalNfcTxRxContext* tx_rx, uint8_t blockNo);
 
 struct nonce_info_static {
     uint32_t cuid;
@@ -45,7 +45,7 @@ struct distance_info {
 };
 
 struct nonce_info_static nested_static_nonce_attack(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint8_t targetBlockNo,
@@ -53,7 +53,7 @@ struct nonce_info_static nested_static_nonce_attack(
     uint64_t ui64Key);
 
 struct nonce_info nested_attack(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint8_t targetBlockNo,
@@ -63,7 +63,7 @@ struct nonce_info nested_attack(
     uint32_t delay);
 
 struct nonce_info_hard nested_hard_nonce_attack(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint8_t targetBlockNo,
@@ -74,7 +74,7 @@ struct nonce_info_hard nested_hard_nonce_attack(
     Stream* file_stream);
 
 uint32_t nested_calibrate_distance(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint64_t ui64Key,
@@ -82,7 +82,7 @@ uint32_t nested_calibrate_distance(
     bool full);
 
 struct distance_info nested_calibrate_distance_info(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint64_t ui64Key);
@@ -94,18 +94,18 @@ typedef enum {
 } NestedCheckKeyResult;
 
 NestedCheckKeyResult nested_check_key(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint64_t ui64Key);
 
-bool nested_check_block(FuriHalNfcTxRxContext* tx_rx, uint8_t blockNo, uint8_t keyType);
+bool nested_check_block(FurryHalNfcTxRxContext* tx_rx, uint8_t blockNo, uint8_t keyType);
 
 void nested_get_data();
 
 bool mifare_classic_authex(
     Crypto1* crypto,
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint32_t uid,
     uint32_t blockNo,
     uint32_t keyType,

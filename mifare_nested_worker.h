@@ -1,6 +1,6 @@
 #pragma once
 
-#include <lib/nfc/nfc_device.h>
+#include "lib/nfclegacy/nfc_device.h"
 
 #define NESTED_FOLDER EXT_PATH("nfc/.nested")
 

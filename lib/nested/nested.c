@@ -1,11 +1,10 @@
 #include "nested.h"
 
-#include <furi_hal_nfc.h>
-#include "../../lib/parity/parity.h"
+#include "../nfclegacy/furi_hal_nfc.h"
 #include "../../lib/crypto1/crypto1.h"
 #define TAG "Nested"
 
-uint16_t nfca_get_crc16(uint8_t* buff, uint16_t len) {
+uint16_t nsnfca_get_crc16(uint8_t* buff, uint16_t len) {
     uint16_t crc = 0x6363; // NFCA_CRC_INIT
     uint8_t byte = 0;
 
@@ -20,52 +19,52 @@ uint16_t nfca_get_crc16(uint8_t* buff, uint16_t len) {
     return crc;
 }
 
-void nfca_append_crc16(uint8_t* buff, uint16_t len) {
-    uint16_t crc = nfca_get_crc16(buff, len);
+void nsnfca_append_crc16(uint8_t* buff, uint16_t len) {
+    uint16_t crc = nsnfca_get_crc16(buff, len);
     buff[len] = (uint8_t)crc;
     buff[len + 1] = (uint8_t)(crc >> 8);
 }
 
 bool mifare_sendcmd_short(
     Crypto1* crypto,
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     bool crypted,
     uint32_t cmd,
     uint32_t data) {
     uint16_t pos;
     uint8_t dcmd[4] = {cmd, data, 0x00, 0x00};
-    nfca_append_crc16(dcmd, 2);
+    nsnfca_append_crc16(dcmd, 2);
 
     memset(tx_rx->tx_data, 0, sizeof(tx_rx->tx_data));
     memset(tx_rx->tx_parity, 0, sizeof(tx_rx->tx_parity));
 
     if(crypted) {
         for(pos = 0; pos < 4; pos++) {
-            uint8_t res = crypto1_byte(crypto, 0x00, 0) ^ dcmd[pos];
+            uint8_t res = nescrypto1_byte(crypto, 0x00, 0) ^ dcmd[pos];
             tx_rx->tx_data[pos] = res;
             tx_rx->tx_parity[0] |=
-                (((crypto1_filter(crypto->odd) ^ oddparity8(dcmd[pos])) & 0x01) << (7 - pos));
+                (((nescrypto1_filter(crypto->odd) ^ oddparity8(dcmd[pos])) & 0x01) << (7 - pos));
         }
 
-        tx_rx->tx_rx_type = FuriHalNfcTxRxTypeRaw;
+        tx_rx->tx_rx_type = FurryHalNfcTxRxTypeRaw;
         tx_rx->tx_bits = 4 * 8;
     } else {
         for(pos = 0; pos < 2; pos++) {
             tx_rx->tx_data[pos] = dcmd[pos];
         }
 
-        tx_rx->tx_rx_type = FuriHalNfcTxRxTypeRxNoCrc;
+        tx_rx->tx_rx_type = FurryHalNfcTxRxTypeRxNoCrc;
         tx_rx->tx_bits = 2 * 8;
     }
 
-    if(!furi_hal_nfc_tx_rx(tx_rx, 6)) return false;
+    if(!furry_hal_nfc_tx_rx(tx_rx, 6)) return false;
 
     return true;
 }
 
 bool mifare_classic_authex(
     Crypto1* crypto,
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint32_t uid,
     uint32_t blockNo,
     uint32_t keyType,
@@ -76,7 +75,7 @@ bool mifare_classic_authex(
     uint8_t nr[4];
 
     // "random" reader nonce:
-    nfc_util_num2bytes(prng_successor(0, 32), 4, nr); // DWT->CYCCNT
+    nfc_util_num2bytes(nesprng_successor(0, 32), 4, nr); // DWT->CYCCNT
 
     // Transmit MIFARE_CLASSIC_AUTH
     if(!mifare_sendcmd_short(crypto, tx_rx, isNested, 0x60 + (keyType & 0x01), blockNo)) {
@@ -88,14 +87,14 @@ bool mifare_classic_authex(
 
     nt = (uint32_t)nfc_util_bytes2num(tx_rx->rx_data, 4);
 
-    if(isNested) crypto1_reset(crypto); // deinit
+    if(isNested) nescrypto1_reset(crypto); // deinit
 
-    crypto1_init(crypto, ui64Key);
+    nescrypto1_init(crypto, ui64Key);
 
     if(isNested) {
-        nt = crypto1_word(crypto, nt ^ uid, 1) ^ nt;
+        nt = nescrypto1_word(crypto, nt ^ uid, 1) ^ nt;
     } else {
-        crypto1_word(crypto, nt ^ uid, 0);
+        nescrypto1_word(crypto, nt ^ uid, 0);
     }
 
     // save Nt
@@ -104,30 +103,30 @@ bool mifare_classic_authex(
     // Generate (encrypted) nr+parity by loading it into the cipher (Nr)
     tx_rx->tx_parity[0] = 0;
     for(uint8_t i = 0; i < 4; i++) {
-        tx_rx->tx_data[i] = crypto1_byte(crypto, nr[i], 0) ^ nr[i];
+        tx_rx->tx_data[i] = nescrypto1_byte(crypto, nr[i], 0) ^ nr[i];
         tx_rx->tx_parity[0] |=
-            (((crypto1_filter(crypto->odd) ^ oddparity8(nr[i])) & 0x01) << (7 - i));
+            (((nescrypto1_filter(crypto->odd) ^ oddparity8(nr[i])) & 0x01) << (7 - i));
     }
 
-    nt = prng_successor(nt, 32);
+    nt = nesprng_successor(nt, 32);
 
     for(uint8_t i = 4; i < 8; i++) {
-        nt = prng_successor(nt, 8);
-        tx_rx->tx_data[i] = crypto1_byte(crypto, 0x00, 0) ^ (nt & 0xff);
+        nt = nesprng_successor(nt, 8);
+        tx_rx->tx_data[i] = nescrypto1_byte(crypto, 0x00, 0) ^ (nt & 0xff);
         tx_rx->tx_parity[0] |=
-            (((crypto1_filter(crypto->odd) ^ oddparity8(nt & 0xff)) & 0x01) << (7 - i));
+            (((nescrypto1_filter(crypto->odd) ^ oddparity8(nt & 0xff)) & 0x01) << (7 - i));
     }
 
-    tx_rx->tx_rx_type = FuriHalNfcTxRxTypeRaw;
+    tx_rx->tx_rx_type = FurryHalNfcTxRxTypeRaw;
     tx_rx->tx_bits = 8 * 8;
 
-    if(!furi_hal_nfc_tx_rx(tx_rx, 25)) {
+    if(!furry_hal_nfc_tx_rx(tx_rx, 25)) {
         return false;
     };
 
     uint32_t answer = (uint32_t)nfc_util_bytes2num(tx_rx->rx_data, 4);
 
-    ntpp = prng_successor(nt, 32) ^ crypto1_word(crypto, 0, 0);
+    ntpp = nesprng_successor(nt, 32) ^ nescrypto1_word(crypto, 0, 0);
 
     if(answer != ntpp) {
         return false;
@@ -179,7 +178,7 @@ bool validate_prng_nonce(uint32_t nonce) {
     return ((65535 - msb + lsb) % 65535) == 16;
 }
 
-MifareNestedNonceType nested_check_nonce_type(FuriHalNfcTxRxContext* tx_rx, uint8_t blockNo) {
+MifareNestedNonceType nested_check_nonce_type(FurryHalNfcTxRxContext* tx_rx, uint8_t blockNo) {
     uint32_t nonces[5] = {};
     uint8_t sameNonces = 0;
     uint8_t hardNonces = 0;
@@ -189,7 +188,7 @@ MifareNestedNonceType nested_check_nonce_type(FuriHalNfcTxRxContext* tx_rx, uint
     for(int32_t i = 0; i < 5; i++) {
         // Setup nfc poller
         nfc_activate();
-        furi_hal_nfc_activate_nfca(100, NULL);
+        furry_hal_nfc_activate_nfca(100, NULL);
 
         // Start communication
         bool success = mifare_sendcmd_short(crypto, tx_rx, false, 0x60, blockNo);
@@ -229,7 +228,7 @@ MifareNestedNonceType nested_check_nonce_type(FuriHalNfcTxRxContext* tx_rx, uint
 }
 
 struct nonce_info_static nested_static_nonce_attack(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint8_t targetBlockNo,
@@ -243,7 +242,7 @@ struct nonce_info_static nested_static_nonce_attack(
 
     // Setup nfc poller
     nfc_activate();
-    if(!furi_hal_nfc_activate_nfca(200, &cuid)) {
+    if(!furry_hal_nfc_activate_nfca(200, &cuid)) {
         free(crypto);
         return r;
     }
@@ -253,16 +252,16 @@ struct nonce_info_static nested_static_nonce_attack(
     uint32_t nt1;
     uint32_t nt_unused;
 
-    crypto1_reset(crypto);
+    nescrypto1_reset(crypto);
 
     mifare_classic_authex(crypto, tx_rx, cuid, blockNo, keyType, ui64Key, false, &nt1);
 
     if(targetKeyType == 1 && nt1 == 0x009080A2) {
-        r.target_nt[0] = prng_successor(nt1, 161);
-        r.target_nt[1] = prng_successor(nt1, 321);
+        r.target_nt[0] = nesprng_successor(nt1, 161);
+        r.target_nt[1] = nesprng_successor(nt1, 321);
     } else {
-        r.target_nt[0] = prng_successor(nt1, 160);
-        r.target_nt[1] = prng_successor(nt1, 320);
+        r.target_nt[0] = nesprng_successor(nt1, 160);
+        r.target_nt[1] = nesprng_successor(nt1, 320);
     }
 
     bool success =
@@ -278,12 +277,12 @@ struct nonce_info_static nested_static_nonce_attack(
 
     nfc_activate();
 
-    if(!furi_hal_nfc_activate_nfca(200, &cuid)) {
+    if(!furry_hal_nfc_activate_nfca(200, &cuid)) {
         free(crypto);
         return r;
     }
 
-    crypto1_reset(crypto);
+    nescrypto1_reset(crypto);
 
     mifare_classic_authex(crypto, tx_rx, cuid, blockNo, keyType, ui64Key, false, &nt1);
 
@@ -309,7 +308,7 @@ struct nonce_info_static nested_static_nonce_attack(
 }
 
 uint32_t nested_calibrate_distance(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint64_t ui64Key,
@@ -324,7 +323,7 @@ uint32_t nested_calibrate_distance(
 
     for(rtr = 0; rtr < rounds; rtr++) {
         nfc_activate();
-        if(!furi_hal_nfc_activate_nfca(200, &cuid)) break;
+        if(!furry_hal_nfc_activate_nfca(200, &cuid)) break;
 
         if(!mifare_classic_authex(crypto, tx_rx, cuid, blockNo, keyType, ui64Key, false, &nt1)) {
             continue;
@@ -337,10 +336,10 @@ uint32_t nested_calibrate_distance(
         }
 
         // NXP Mifare is typical around 840, but for some unlicensed/compatible mifare tag this can be 160
-        uint32_t nttmp = prng_successor(nt1, 100);
+        uint32_t nttmp = nesprng_successor(nt1, 100);
 
         for(i = 101; i < max_prng_value; i++) {
-            nttmp = prng_successor(nttmp, 1);
+            nttmp = nesprng_successor(nttmp, 1);
             if(nttmp == nt2) break;
         }
 
@@ -388,7 +387,7 @@ uint32_t nested_calibrate_distance(
 }
 
 struct distance_info nested_calibrate_distance_info(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint64_t ui64Key) {
@@ -402,17 +401,17 @@ struct distance_info nested_calibrate_distance_info(
 
     for(rtr = 0; rtr < 10; rtr++) {
         nfc_activate();
-        if(!furi_hal_nfc_activate_nfca(200, &cuid)) break;
+        if(!furry_hal_nfc_activate_nfca(200, &cuid)) break;
 
         mifare_classic_authex(crypto, tx_rx, cuid, blockNo, keyType, ui64Key, false, &nt1);
 
         mifare_classic_authex(crypto, tx_rx, cuid, blockNo, keyType, ui64Key, true, &nt2);
 
         // NXP Mifare is typical around 840, but for some unlicensed/compatible mifare tag this can be 160
-        uint32_t nttmp = prng_successor(nt1, 1);
+        uint32_t nttmp = nesprng_successor(nt1, 1);
 
         for(i = 2; i < 65565; i++) {
-            nttmp = prng_successor(nttmp, 1);
+            nttmp = nesprng_successor(nttmp, 1);
             if(nttmp == nt2) break;
         }
 
@@ -459,7 +458,7 @@ struct distance_info nested_calibrate_distance_info(
 }
 
 struct nonce_info nested_attack(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint8_t targetBlockNo,
@@ -482,7 +481,7 @@ struct nonce_info nested_attack(
 
         while(r.target_nt[i] == 0) { // continue until we have an unambiguous nonce
             nfc_activate();
-            if(!furi_hal_nfc_activate_nfca(200, &cuid)) {
+            if(!furry_hal_nfc_activate_nfca(200, &cuid)) {
                 free(crypto);
                 return r;
             }
@@ -507,10 +506,10 @@ struct nonce_info nested_attack(
             }
 
             uint32_t ncount = 0;
-            uint32_t nttest = prng_successor(nt1, dmin - 1);
+            uint32_t nttest = nesprng_successor(nt1, dmin - 1);
 
             for(j = dmin; j < dmax + 1; j++) {
-                nttest = prng_successor(nttest, 1);
+                nttest = nesprng_successor(nttest, 1);
                 ks1 = nt2 ^ nttest;
 
                 if(valid_nonce(nttest, nt2, ks1, par_array)) {
@@ -562,7 +561,7 @@ struct nonce_info nested_attack(
 }
 
 struct nonce_info_hard nested_hard_nonce_attack(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint8_t targetBlockNo,
@@ -582,7 +581,7 @@ struct nonce_info_hard nested_hard_nonce_attack(
 
     for(uint32_t i = 0; i < 8; i++) {
         nfc_activate();
-        if(!furi_hal_nfc_activate_nfca(200, &cuid)) {
+        if(!furry_hal_nfc_activate_nfca(200, &cuid)) {
             free(crypto);
             return r;
         }
@@ -645,7 +644,7 @@ struct nonce_info_hard nested_hard_nonce_attack(
 }
 
 NestedCheckKeyResult nested_check_key(
-    FuriHalNfcTxRxContext* tx_rx,
+    FurryHalNfcTxRxContext* tx_rx,
     uint8_t blockNo,
     uint8_t keyType,
     uint64_t ui64Key) {
@@ -653,7 +652,7 @@ NestedCheckKeyResult nested_check_key(
     uint32_t nt;
 
     nfc_activate();
-    if(!furi_hal_nfc_activate_nfca(200, &cuid)) return NestedCheckKeyNoTag;
+    if(!furry_hal_nfc_activate_nfca(200, &cuid)) return NestedCheckKeyNoTag;
 
     FURI_LOG_D(
         TAG, "Checking %c key %012llX for block %u", !keyType ? 'A' : 'B', ui64Key, blockNo);
@@ -670,11 +669,11 @@ NestedCheckKeyResult nested_check_key(
     return success ? NestedCheckKeyValid : NestedCheckKeyInvalid;
 }
 
-bool nested_check_block(FuriHalNfcTxRxContext* tx_rx, uint8_t blockNo, uint8_t keyType) {
+bool nested_check_block(FurryHalNfcTxRxContext* tx_rx, uint8_t blockNo, uint8_t keyType) {
     uint32_t cuid = 0;
 
     nfc_activate();
-    if(!furi_hal_nfc_activate_nfca(200, &cuid)) return false;
+    if(!furry_hal_nfc_activate_nfca(200, &cuid)) return false;
 
     Crypto1* crypto = malloc(sizeof(Crypto1));
 
@@ -687,9 +686,9 @@ bool nested_check_block(FuriHalNfcTxRxContext* tx_rx, uint8_t blockNo, uint8_t k
     return success;
 }
 
-void nested_get_data(FuriHalNfcDevData* dev_data) {
+void nested_get_data(FurryHalNfcDevData* dev_data) {
     nfc_activate();
-    furi_hal_nfc_detect(dev_data, 400);
+    furry_hal_nfc_detect(dev_data, 400);
     nfc_deactivate();
 }
 
@@ -697,22 +696,22 @@ void nfc_activate() {
     nfc_deactivate();
 
     // Setup nfc poller
-    furi_hal_nfc_exit_sleep();
-    furi_hal_nfc_ll_txrx_on();
-    furi_hal_nfc_ll_poll();
-    if(furi_hal_nfc_ll_set_mode(
-           FuriHalNfcModePollNfca, FuriHalNfcBitrate106, FuriHalNfcBitrate106) !=
-       FuriHalNfcReturnOk)
+    furry_hal_nfc_exit_sleep();
+    furry_hal_nfc_ll_txrx_on();
+    furry_hal_nfc_ll_poll();
+    if(furry_hal_nfc_ll_set_mode(
+           FurryHalNfcModePollNfca, FurryHalNfcBitrate106, FurryHalNfcBitrate106) !=
+       FurryHalNfcReturnOk)
         return;
 
-    furi_hal_nfc_ll_set_fdt_listen(FURI_HAL_NFC_LL_FDT_LISTEN_NFCA_POLLER);
-    furi_hal_nfc_ll_set_fdt_poll(FURI_HAL_NFC_LL_FDT_POLL_NFCA_POLLER);
-    furi_hal_nfc_ll_set_error_handling(FuriHalNfcErrorHandlingNfc);
-    furi_hal_nfc_ll_set_guard_time(FURI_HAL_NFC_LL_GT_NFCA);
+    furry_hal_nfc_ll_set_fdt_listen(FURRY_HAL_NFC_LL_FDT_LISTEN_NFCA_POLLER);
+    furry_hal_nfc_ll_set_fdt_poll(FURRY_HAL_NFC_LL_FDT_POLL_NFCA_POLLER);
+    furry_hal_nfc_ll_set_error_handling(FurryHalNfcErrorHandlingNfc);
+    furry_hal_nfc_ll_set_guard_time(FURRY_HAL_NFC_LL_GT_NFCA);
 }
 
 void nfc_deactivate() {
-    furi_hal_nfc_ll_txrx_off();
-    furi_hal_nfc_start_sleep();
-    furi_hal_nfc_sleep();
+    furry_hal_nfc_ll_txrx_off();
+    furry_hal_nfc_start_sleep();
+    furry_hal_nfc_sleep();
 }
